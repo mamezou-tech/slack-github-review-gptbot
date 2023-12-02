@@ -33,8 +33,8 @@ export async function getParameter(name: keyof typeof parameterNames): Promise<s
     }
   );
   if (resp.ok) {
-    const value = (await resp.json()) as GetParameterCommandOutput;
-    return value.Parameter?.Value ?? '';
+    const output = (await resp.json()) as GetParameterCommandOutput;
+    return output.Parameter?.Value ?? '';
   } else {
     throw new ParameterError(`${name}:${resp.status}:${await resp.text()}`, resp);
   }

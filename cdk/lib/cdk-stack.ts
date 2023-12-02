@@ -14,7 +14,7 @@ export class CdkStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
-    const gatewayRole = new iam.Role(this, 'GptSlackGatewayLambdaRole', {
+    const callbackRole = new iam.Role(this, 'GptSlackGatewayLambdaRole', {
       roleName: `${this.stackName}-callback-lambda-role`,
       assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
       managedPolicies: [iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AWSLambdaBasicExecutionRole')],
@@ -67,7 +67,7 @@ export class CdkStack extends cdk.Stack {
 
     // ①コールバックAPI(callback)
     const callback = new NodejsFunction(this, 'SlackEventCallbackFunction', {
-      role: gatewayRole,
+      role: callbackRole,
       functionName: `${this.stackName}-callback`,
       description: 'Slack event callback entry point',
       entry: '../functions/callback.ts',
