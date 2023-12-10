@@ -2,6 +2,7 @@ import * as cdk from 'aws-cdk-lib';
 import { Duration, RemovalPolicy } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as iam from 'aws-cdk-lib/aws-iam';
+import * as logs from 'aws-cdk-lib/aws-logs';
 import { Effect } from 'aws-cdk-lib/aws-iam';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import { FunctionUrlAuthType } from 'aws-cdk-lib/aws-lambda';
@@ -64,6 +65,10 @@ export class CdkStack extends cdk.Stack {
         })
       }
     });
+    const logGroup = new logs.LogGroup(this, 'LambdaLogGroup', {
+      logGroupName: `/slack/app/gpt/${this.stackName}`,
+      retention: RetentionDays.ONE_MONTH,
+    });
 
     // ①コールバックAPI(callback)
     const callback = new NodejsFunction(this, 'SlackEventCallbackFunction', {
@@ -72,9 +77,12 @@ export class CdkStack extends cdk.Stack {
       description: 'Slack event callback entry point',
       entry: '../functions/callback.ts',
       handler: 'handler',
-      runtime: lambda.Runtime.NODEJS_18_X,
-      logRetention: RetentionDays.ONE_MONTH,
+      runtime: lambda.Runtime.NODEJS_20_X,
       timeout: Duration.seconds(3),
+      logGroup,
+      applicationLogLevel: 'INFO',
+      systemLogLevel: 'INFO',
+      logFormat: 'JSON',
       environment: {
         API_INVOKER_NAME: `${this.stackName}-api-invoker`
       }
@@ -95,10 +103,13 @@ export class CdkStack extends cdk.Stack {
       description: 'Invoke OpenAI Assistants API',
       entry: '../functions/api-invoker.ts',
       handler: 'handler',
-      logRetention: RetentionDays.ONE_MONTH,
-      runtime: lambda.Runtime.NODEJS_18_X,
+      runtime: lambda.Runtime.NODEJS_20_X,
       timeout: Duration.seconds(120),
       layers: [parameterStoreExtension],
+      logGroup,
+      applicationLogLevel: 'INFO',
+      systemLogLevel: 'INFO',
+      logFormat: 'JSON',
       environment: {
         OPENAI_THREAD_TABLE: `${this.stackName}-OpenAIThread`,
         PARAMETER_NAME_PREFIX: parameterNamePrefix
