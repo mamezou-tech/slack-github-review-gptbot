@@ -1,6 +1,6 @@
 import { APIGatewayProxyHandler } from 'aws-lambda';
 import { InvokeCommand, LambdaClient } from '@aws-sdk/client-lambda';
-import { LambdaEvent } from './api-invoker';
+import { type LambdaEvent } from './api-invoker';
 
 const lambdaClient = new LambdaClient();
 
@@ -26,6 +26,7 @@ type SlackRequest = VerificationRequest | EventCallBack;
 
 export const handler: APIGatewayProxyHandler = async (event) => {
   const request: SlackRequest = JSON.parse(event.body || '{}');
+  console.debug({ request });
   switch (request.type) {
   case 'event_callback': {
     const event: LambdaEvent = {

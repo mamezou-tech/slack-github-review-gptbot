@@ -1,6 +1,6 @@
 import { Handler } from 'aws-lambda';
 import { getParameter } from './config';
-import { chat } from './chat';
+import { AlreadyRunning, chat } from './chat';
 import { SectionBlock, WebClient } from '@slack/web-api';
 
 export interface LambdaEvent {
@@ -12,6 +12,7 @@ export interface LambdaEvent {
 }
 
 export const handler: Handler = async (event: LambdaEvent) => {
+  console.debug({ event });
   const slackClient = new WebClient(await getParameter('slackBotToken'));
 
   try {
@@ -30,15 +31,22 @@ export const handler: Handler = async (event: LambdaEvent) => {
       reply_broadcast: event.threadBroadcast,
       blocks
     });
-    console.log(slackResp);
-  } catch (e) {
-    console.log('failed...', { e });
+    console.info({ slackResp });
+  } catch (error) {
+    if (error instanceof AlreadyRunning) {
+      console.warn({
+        body: 'It is already running. Double execution is not possible, so the process is terminated.',
+        run: error.run
+      });
+      return;
+    }
+    console.error({ error });
     const slackResp = await slackClient.chat.postMessage({
       channel: event.channel,
       thread_ts: event.threadTs ?? event.ts,
       text: 'すみません。問題が発生して返信できません。。。',
       reply_broadcast: event.threadBroadcast
     });
-    console.log(slackResp);
+    console.info({ slackResp });
   }
 };

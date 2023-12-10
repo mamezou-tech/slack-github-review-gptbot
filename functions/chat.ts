@@ -4,7 +4,6 @@ import { functionDefinitions, functions } from './github';
 import { DynamoDBDocumentClient, GetCommand, PutCommand } from '@aws-sdk/lib-dynamodb';
 import { PutParameterCommand, SSMClient } from '@aws-sdk/client-ssm';
 import { LambdaEvent } from './api-invoker';
-import { APIError } from 'openai/error';
 import { getParameter, parameterNames } from './config';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 
@@ -12,24 +11,32 @@ const ssmClient = new SSMClient();
 const dynamodbClient = new DynamoDBClient();
 const documentClient = DynamoDBDocumentClient.from(dynamodbClient);
 
+export class AlreadyRunning extends Error {
+  constructor(readonly run: OpenAI.Beta.Threads.Run) {
+    super(`already running with ${run.id}`);
+  }
+}
+
 async function callFunctions(chain: OpenAI.Beta.Threads.Runs.RequiredActionFunctionToolCall[], threadId: string, runId: string, openai: OpenAI) {
   const funcResults = chain.map(async (func) => {
-    console.log('function calling:', func.function.name, func.function.arguments);
+    console.info('function calling:', func.function.name);
+    console.debug({ function: func.function });
     try {
       // eslint-disable-next-line @typescript-eslint/ban-ts-comment
       // @ts-expect-error
       const resp = await functions[func.function.name].call(this, JSON.parse(func.function.arguments));
+      console.info('received response');
+      console.debug({ functionResp: resp });
       const output = JSON.stringify(resp);
-      console.log('response', output);
       return {
         tool_call_id: func.id,
         output
       };
-    } catch (e) {
-      console.log('function calling error:', { e });
+    } catch (error) {
+      console.warn({ error });
       return {
         tool_call_id: func.id,
-        output: (e as Error).message
+        output: (error as Error).message
       };
     }
   });
@@ -64,6 +71,7 @@ export async function chat(event: LambdaEvent, slackClient: WebClient): Promise<
       thread.id,
       run.id
     );
+    console.debug({ status: currentRun.status });
     if (currentRun.status === 'completed') {
       break;
     } else if (currentRun.status === 'requires_action') {
@@ -83,6 +91,7 @@ export async function chat(event: LambdaEvent, slackClient: WebClient): Promise<
 
   // Step6. Response
   const messages = await openai.beta.threads.messages.list(thread.id);
+  console.debug({ messages });
 
   const result = [];
   for (const message of messages.data) {
@@ -90,10 +99,11 @@ export async function chat(event: LambdaEvent, slackClient: WebClient): Promise<
     for (const c of message.content) {
       switch (c.type) {
       case 'text':
+        console.debug({ value: c.text.value, annotations: c.text.annotations });
         result.push(c.text.value);
         break;
       case 'image_file':
-        console.log('image_file', c.image_file.file_id);
+        console.info({ imageFile: c.image_file });
         result.push(
           'イメージファイルが返されましたがまだサポートしていません'
         );
@@ -138,22 +148,14 @@ async function createMessage(
   thread: OpenAI.Beta.Thread,
   event: LambdaEvent
 ) {
-  try {
-    return await openai.beta.threads.messages.create(thread.id, {
-      role: 'user',
-      content: event.text
-    });
-  } catch (e) {
-    if (e instanceof APIError) {
-      if (e.status === 400 && e.type === 'invalid_request_error') {
-        const result = e.message.match(/run (?<runId>run_\w+) is active/);
-        if (result?.groups?.runId) {
-          await openai.beta.threads.runs.cancel(thread.id, result.groups.runId);
-        }
-      }
-    }
-    throw e;
-  }
+  const runs = await openai.beta.threads.runs.list(thread.id);
+  const running = runs.data.find(run => run.status === 'in_progress');
+  if (running) throw new AlreadyRunning(running);
+
+  return await openai.beta.threads.messages.create(thread.id, {
+    role: 'user',
+    content: event.text
+  });
 }
 
 async function createOrGetThread(event: LambdaEvent, threadTs: string, opts: {
@@ -171,13 +173,15 @@ async function createOrGetThread(event: LambdaEvent, threadTs: string, opts: {
   );
 
   if (record.Item) {
-    console.log('found dynamodb record', record.Item);
+    console.info('found dynamodb record');
+    console.debug({ item: record.Item });
     const threadId = record.Item?.threadId;
     return openai.beta.threads.retrieve(threadId ?? '');
   }
 
-  console.log('not found dynamodb record. creating new thread...');
+  console.info('not found dynamodb record. creating new thread...');
   const initialMessages = await makeInitialMessages(event, slackClient);
+  console.debug({ initialMessages });
   const thread = await openai.beta.threads.create({
     messages:
       initialMessages as OpenAI.Beta.Threads.ThreadCreateParams.Message[]
@@ -194,7 +198,7 @@ async function createOrGetThread(event: LambdaEvent, threadTs: string, opts: {
       })
     );
   } catch (e) {
-    console.log('failed to put thread to DynamoDB...', { e });
+    console.error({ dynamodbError: e });
   }
   return thread;
 }
@@ -203,30 +207,38 @@ async function makeInitialMessages(event: LambdaEvent, slackClient: WebClient) {
   const makeOpenAIMessages = (
     slackMessage: ConversationsRepliesResponse | ConversationsHistoryResponse
   ) => {
+    if (!slackMessage.messages?.length) return [];
     return (
-      slackMessage.messages
+      slackMessage.messages.slice(0, slackMessage.messages.length - 1) // exclude current message
         // ?.filter(msg => !msg.bot_id) // exclude bot posts
         ?.map((msg) => {
-          let content = msg.blocks?.map((block) => block.text?.text).join('\n');
+          let content = msg.blocks?.flatMap((block) => {
+            if (block.elements?.length) {
+              return block.elements.flatMap(accessory => JSON.stringify(accessory)).join('\n');
+            } else {
+              return block.text?.text || '';
+            }
+          }).join('\n');
           if (msg.attachments) {
+            content += '\n';
             content += msg.attachments
               .map((attachment) => {
+                console.debug({ attachment });
                 const { title, text } = attachment;
-                return !!title && !!text
-                  ? `${title}\n${text}`
-                  : title || text || '';
+                return !!title && !!text ? `${title}\n${text}` : title || text || '';
               })
               .join('\n');
           }
-          return { role: 'user', content: content || msg.text || '' } as const;
+          content = (content || msg.text || '').replaceAll(/<@U[0-9A-Z]+>/g, '');
+          return { role: 'user', content };
         })
-        .filter((msg) => !!msg.content) ?? []
+        .filter((msg) => !!msg.content)
     );
   };
 
   // mention on thread reply
   if (event.threadTs) {
-    console.log('initializing with thread replies...');
+    console.info('initializing with thread replies...');
     const history = await slackClient.conversations.replies({
       channel: event.channel,
       ts: event.threadTs,
@@ -236,10 +248,10 @@ async function makeInitialMessages(event: LambdaEvent, slackClient: WebClient) {
   }
 
   // mention on main thread
-  console.log('initializing with main thread messages...');
+  console.info('initializing with main thread messages...');
   const history = await slackClient.conversations.history({
     channel: event.channel,
-    limit: 10
+    limit: 3
   });
   return makeOpenAIMessages(history);
 }
