@@ -193,7 +193,7 @@ async function createOrGetThread(event: LambdaEvent, threadTs: string, opts: {
         Item: {
           threadTs: threadTs,
           threadId: thread.id,
-          expiration: (Math.ceil(new Date().getTime() / 1000 + 3 * 60 * 60)).toString()
+          expiration: (Math.floor(Date.now() / 1000) + 3 * 24 * 60 * 60).toString() // 3日で失効
         }
       })
     );

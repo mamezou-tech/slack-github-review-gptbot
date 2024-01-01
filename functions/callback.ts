@@ -24,6 +24,8 @@ interface EventCallBack {
 
 type SlackRequest = VerificationRequest | EventCallBack;
 
+// FIXME: request verification
+// https://api.slack.com/authentication/verifying-requests-from-slack
 export const handler: APIGatewayProxyHandler = async (event) => {
   const request: SlackRequest = JSON.parse(event.body || '{}');
   console.debug({ request });
